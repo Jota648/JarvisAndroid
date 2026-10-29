@@ -15,12 +15,16 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -105,10 +109,10 @@ class MainActivity : AppCompatActivity() {
             letterSpacing = 0.2f
             setTextColor(cGray)
             gravity = Gravity.CENTER
+            setPadding(dp(24), dp(8), dp(24), dp(8))
+            setOnLongClickListener { askVoice(); true }
         }
-        root.addView(status, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(6)
-        })
+        root.addView(status, LinearLayout.LayoutParams(match, wrap))
 
         core = CoreView(this)
         root.addView(core, LinearLayout.LayoutParams(match, 0, 1f))
@@ -179,6 +183,7 @@ class MainActivity : AppCompatActivity() {
             if (st == TextToSpeech.SUCCESS) {
                 tts?.setLanguage(Locale("pt", "BR"))
                 ttsReady = true
+                applyVoice()
             }
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -211,6 +216,92 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+    }
+
+    private fun applyVoice() {
+        val engine = tts ?: return
+        val name = prefs.getString("voice", "") ?: ""
+        if (name.isNotBlank()) {
+            val found = engine.voices?.firstOrNull { it.name == name }
+            if (found != null) engine.setVoice(found)
+        }
+        engine.setSpeechRate(prefs.getFloat("rate", 1f))
+        engine.setPitch(prefs.getFloat("pitch", 1f))
+    }
+
+    private fun askVoice() {
+        val engine = tts
+        if (engine == null || !ttsReady) {
+            reply.text = "A voz ainda está carregando. Tente de novo em instantes."
+            return
+        }
+        val voices: List<Voice> = (engine.voices ?: emptySet<Voice>())
+            .filter { it.locale.language == "pt" }
+            .sortedWith(compareBy({ it.locale.country }, { it.name }))
+        if (voices.isEmpty()) {
+            reply.text = "Nenhuma voz em português encontrada. Verifique em Configurações > Texto para fala."
+            return
+        }
+
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+
+        val labels = voices.mapIndexed { i, v ->
+            val country = v.locale.displayCountry.ifBlank { v.locale.language }
+            val online = if (v.isNetworkConnectionRequired) " · online" else ""
+            "Voz ${i + 1} ($country)$online"
+        }
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(
+            this@MainActivity,
+            android.R.layout.simple_spinner_dropdown_item,
+            labels
+        )
+        val savedName = prefs.getString("voice", "") ?: ""
+        val currentName = engine.voice?.name
+        var selected = voices.indexOfFirst { it.name == savedName }
+        if (selected < 0) selected = voices.indexOfFirst { it.name == currentName }
+        if (selected < 0) selected = 0
+        spinner.setSelection(selected)
+
+        fun makeBar(value: Float): SeekBar {
+            val bar = SeekBar(this@MainActivity)
+            bar.max = 150
+            bar.progress = ((value - 0.5f) * 100f).toInt().coerceIn(0, 150)
+            return bar
+        }
+        val rateBar = makeBar(prefs.getFloat("rate", 1f))
+        val pitchBar = makeBar(prefs.getFloat("pitch", 1f))
+
+        val rateLabel = TextView(this).apply { text = "Velocidade (esquerda = lenta)" }
+        val pitchLabel = TextView(this).apply { text = "Tom (esquerda = grave)" }
+        rateLabel.setPadding(0, pad, 0, 0)
+        pitchLabel.setPadding(0, pad, 0, 0)
+
+        box.addView(spinner)
+        box.addView(rateLabel)
+        box.addView(rateBar)
+        box.addView(pitchLabel)
+        box.addView(pitchBar)
+
+        AlertDialog.Builder(this)
+            .setTitle("Voz do JARVIS")
+            .setView(box)
+            .setPositiveButton("Salvar") { _, _ ->
+                val chosen = voices[spinner.selectedItemPosition]
+                prefs.edit()
+                    .putString("voice", chosen.name)
+                    .putFloat("rate", 0.5f + rateBar.progress / 100f)
+                    .putFloat("pitch", 0.5f + pitchBar.progress / 100f)
+                    .apply()
+                applyVoice()
+                engine.speak("Olá, eu sou o JARVIS.", TextToSpeech.QUEUE_FLUSH, null, "jarvis")
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun show(state: CoreState, label: String) {
