@@ -1,12 +1,20 @@
 package com.jota.jarvis
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -14,14 +22,17 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -31,6 +42,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var reply: TextView
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("jarvis", Context.MODE_PRIVATE) }
+
+    private var recognizer: SpeechRecognizer? = null
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var listening = false
+    private var speaking = false
+    private var busy = false
+
+    private val micPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startListening()
+            } else {
+                reply.text = "Sem permissão do microfone. Ative em Configurações > Apps > JARVIS > Permissões."
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -103,7 +130,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         val input = EditText(this).apply {
-            hint = "Digite um comando..."
+            hint = "Digite ou toque no núcleo e fale..."
             setHintTextColor(cGray)
             setTextColor(cText)
             textSize = 16f
@@ -120,16 +147,12 @@ class MainActivity : AppCompatActivity() {
             setMargins(dp(20), dp(8), dp(20), dp(20))
         })
 
-        core.setOnClickListener {
-            handler.removeCallbacksAndMessages(null)
-            show(CoreState.LISTENING, "ESCUTANDO")
-            handler.postDelayed({ show(CoreState.IDLE, "ONLINE") }, 3000)
-        }
+        core.setOnClickListener { onCoreTap() }
 
         input.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) {
                 val text = input.text.toString().trim()
-                if (text.isNotEmpty()) {
+                if (text.isNotEmpty() && !busy) {
                     input.text.clear()
                     chat(text)
                 }
@@ -140,11 +163,135 @@ class MainActivity : AppCompatActivity() {
         }
 
         setContentView(root)
+        initSpeech()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        recognizer?.destroy()
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
+    }
+
+    private fun initSpeech() {
+        tts = TextToSpeech(this) { st ->
+            if (st == TextToSpeech.SUCCESS) {
+                tts?.setLanguage(Locale("pt", "BR"))
+                ttsReady = true
+            }
+        }
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                runOnUiThread {
+                    speaking = true
+                    show(CoreState.DONE, "FALANDO")
+                }
+            }
+
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread {
+                    speaking = false
+                    show(CoreState.IDLE, "ONLINE")
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                runOnUiThread {
+                    speaking = false
+                    show(CoreState.IDLE, "ONLINE")
+                }
+            }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                runOnUiThread {
+                    speaking = false
+                    show(CoreState.IDLE, "ONLINE")
+                }
+            }
+        })
     }
 
     private fun show(state: CoreState, label: String) {
         core.state = state
         status.text = label
+    }
+
+    private fun hasMic(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun onCoreTap() {
+        when {
+            busy -> return
+            speaking -> {
+                tts?.stop()
+                speaking = false
+                show(CoreState.IDLE, "ONLINE")
+            }
+            listening -> {
+                recognizer?.cancel()
+                listening = false
+                show(CoreState.IDLE, "ONLINE")
+            }
+            hasMic() -> startListening()
+            else -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            reply.text = "Reconhecimento de voz indisponível neste aparelho. Verifique se os Serviços de fala do Google estão instalados e ativados."
+            return
+        }
+        tts?.stop()
+        recognizer?.destroy()
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { rec ->
+            rec.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val partial = partialResults
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                    if (!partial.isNullOrBlank()) reply.text = "Você: $partial"
+                }
+
+                override fun onError(error: Int) {
+                    listening = false
+                    reply.text = "Não consegui ouvir (código $error). Toque no núcleo e tente de novo."
+                    show(CoreState.IDLE, "ONLINE")
+                }
+
+                override fun onResults(results: Bundle?) {
+                    listening = false
+                    val text = results
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                    if (text.isNullOrBlank()) {
+                        show(CoreState.IDLE, "ONLINE")
+                    } else {
+                        chat(text)
+                    }
+                }
+            })
+        }
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+        listening = true
+        reply.text = ""
+        show(CoreState.LISTENING, "ESCUTANDO")
+        recognizer?.startListening(intent)
     }
 
     private fun askSettings() {
@@ -182,18 +329,22 @@ class MainActivity : AppCompatActivity() {
         val key = prefs.getString("key", "") ?: ""
         val model = prefs.getString("model", "") ?: ""
         if (key.isBlank() || model.isBlank()) {
+            show(CoreState.IDLE, "ONLINE")
             askSettings()
             return
         }
+        busy = true
+        tts?.stop()
         handler.removeCallbacksAndMessages(null)
         show(CoreState.PROCESSING, "PROCESSANDO")
-        reply.text = ""
+        reply.text = "Você: $text"
 
         thread {
+            var ok = false
             val result = try {
                 val system = JSONObject()
                     .put("role", "system")
-                    .put("content", "Você é o JARVIS, um assistente pessoal. Responda em português, de forma curta e direta.")
+                    .put("content", "Você é o JARVIS, um assistente pessoal. Responda em português, de forma curta e direta, em no máximo três frases.")
                 val user = JSONObject()
                     .put("role", "user")
                     .put("content", text)
@@ -216,6 +367,7 @@ class MainActivity : AppCompatActivity() {
                 val stream = if (code in 200..299) conn.inputStream else conn.errorStream
                 val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
                 if (code in 200..299) {
+                    ok = true
                     JSONObject(raw)
                         .getJSONArray("choices")
                         .getJSONObject(0)
@@ -230,9 +382,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             runOnUiThread {
-                reply.text = result
-                show(CoreState.DONE, "CONCLUÍDO")
-                handler.postDelayed({ show(CoreState.IDLE, "ONLINE") }, 1500)
+                busy = false
+                reply.text = "Você: $text\n\nJARVIS: $result"
+                if (ok && ttsReady && result.isNotBlank()) {
+                    tts?.speak(result, TextToSpeech.QUEUE_FLUSH, null, "jarvis")
+                } else {
+                    show(CoreState.DONE, "CONCLUÍDO")
+                    handler.postDelayed({ show(CoreState.IDLE, "ONLINE") }, 1500)
+                }
             }
         }
     }
