@@ -3,7 +3,7 @@ name: Build JARVIS APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [main]
 
 permissions:
   contents: read
@@ -13,24 +13,187 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
 
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
 
-      - name: Build APK
+      - name: Create Android project files
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/jarvis/personal
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.jarvis.personal"
+              compileSdk = 36
+
+              defaultConfig {
+                  applicationId = "com.jarvis.personal"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "0.1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:theme="@android:style/Theme.Material.NoActionBar"
+                  android:label="JARVIS"
+                  android:allowBackup="false"
+                  android:supportsRtl="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/jarvis/personal/MainActivity.kt <<'EOF'
+          package com.jarvis.personal
+
+          import android.app.Activity
+          import android.os.Bundle
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.*
+
+          class MainActivity : Activity() {
+              private val bg = Color.rgb(7, 12, 19)
+              private val cyan = Color.rgb(60, 220, 235)
+              private val panel = Color.rgb(13, 22, 33)
+              private lateinit var log: LinearLayout
+              private lateinit var input: EditText
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.statusBarColor = bg
+                  window.navigationBarColor = bg
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(20, 28, 20, 20)
+                      setBackgroundColor(bg)
+                  }
+
+                  root.addView(label("J.A.R.V.I.S. // SYSTEM", 22f, cyan))
+                  root.addView(label("PERSONAL AI CONSOLE  •  V0.1", 12f, Color.GRAY))
+
+                  val status = label("● SYSTEM ONLINE", 14f, cyan)
+                  status.setPadding(12, 20, 12, 20)
+                  root.addView(status)
+
+                  root.addView(label("ACTIVITY LOG", 12f, Color.GRAY))
+
+                  val scroll = ScrollView(this)
+                  log = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(12, 12, 12, 12)
+                      setBackgroundColor(panel)
+                  }
+                  scroll.addView(log)
+                  root.addView(scroll, LinearLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                  ))
+
+                  addLog("JARVIS", "Terminal initialized.")
+                  addLog("JARVIS", "Type help, status, or time.")
+
+                  val row = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+
+                  input = EditText(this).apply {
+                      hint = "Enter command..."
+                      setTextColor(Color.WHITE)
+                      setHintTextColor(Color.GRAY)
+                      singleLine = true
+                      setBackgroundColor(panel)
+                  }
+                  row.addView(input, LinearLayout.LayoutParams(0, 55, 1f))
+
+                  val send = Button(this).apply {
+                      text = "SEND"
+                      setOnClickListener { command() }
+                  }
+                  row.addView(send)
+                  root.addView(row)
+
+                  setContentView(root)
+              }
+
+              private fun command() {
+                  val cmd = input.text.toString().trim()
+                  if (cmd.isEmpty()) return
+                  addLog("YOU", cmd)
+                  input.setText("")
+
+                  val answer = when (cmd.lowercase()) {
+                      "help" -> "Commands: help, status, time, clear."
+                      "status" -> "Interface operational. AI connection pending."
+                      "time" -> java.text.SimpleDateFormat(
+                          "HH:mm:ss", java.util.Locale.getDefault()
+                      ).format(java.util.Date())
+                      "clear" -> {
+                          log.removeAllViews()
+                          "Log cleared."
+                      }
+                      else -> "Command received. AI core will be added next."
+                  }
+                  addLog("JARVIS", answer)
+              }
+
+              private fun addLog(who: String, message: String) {
+                  log.addView(label("[$who]  $message", 13f,
+                      if (who == "YOU") Color.WHITE else cyan).apply {
+                      setPadding(0, 0, 0, 16)
+                  })
+              }
+
+              private fun label(textValue: String, size: Float, color: Int) =
+                  TextView(this).apply {
+                      text = textValue
+                      textSize = size
+                      setTextColor(color)
+                      typeface = Typeface.MONOSPACE
+                  }
+          }
+          EOF
+
+      - name: Build debug APK
         run: gradle assembleDebug
 
       - name: Upload APK
@@ -38,4 +201,4 @@ jobs:
         with:
           name: JARVIS-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          
+          if-no-files-found: error
